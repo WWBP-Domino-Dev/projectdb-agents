@@ -1,0 +1,211 @@
+Sub Initialize
+%REM
+	Agent CreateProject
+	Created May 28, 2015 by George Owen/Pittsburgh/IBM
+	Description: The WWBP Projects database is tightly coupled to PATHway.
+		Each project document is tied to a specific PATHway request (there
+		are some exceptions, but they are few in number).  This agent will
+		create a new project by contacting the PATHway database and extracting
+		the required information to populate the new project.
+%END REM
+
+	On Error GoTo SubError
+
+	' Set up the current environment
+	Set session = New NotesSession
+	Set ws = New NotesUIWorkspace
+	Set dbProj = session.Currentdatabase
+	Set dbPWay = New NotesDatabase(ProdServer, "Dept/WWBP/pathway")
+
+	' First verify the user has a document in the Project database
+	Set vw = dbProj.GetView("Project Keywords")
+	keyList(0) = "Resources"
+	keyList(1) = session.Commonusername
+	Set docResource = vw.GetDocumentByKey(keyList, True)
+
+	If (docResource Is Nothing) Then
+		Error 30120, "User is not a valid Project database user"
+	End If
+
+	' Prompt for PATHway number
+	vReply = ws.Prompt(PROMPT_OKCANCELEDIT, "PATHway Project Create", "Enter the corresponding PATHway request id")
+
+	' Search PATHway for matching status doc
+	Set vw = dbPWay.GetView("StatusSearch")
+	Set docPATH = vw.GetDocumentByKey(cint(vReply), True)
+
+	If (docPATH Is Nothing) Then
+		Error 30100, "PATHway request " & Str$(vReply) & " not found"
+	End If
+
+%REM
+	search = {Form = "PWayData" & PWayID = } & vReply & { & ! @IsAvailable(PWayEngDate)}
+	Set dc = dbPWay.Search(search, Nothing, 0)
+
+	If (dc.count = 0) Then
+		Error 30100,"PATHway request " & Str$(vReply) & " not found"
+	End If
+	If (dc.count > 1) Then
+		Error 30110,"PATHway request " & Str$(vReply) & " has multiple entries"
+	End If
+%END REM
+
+	' Get the PATHway request document
+	' Set docPATH = dc.Getfirstdocument()
+
+	' =========================================================================================
+	' Start building the content for the new document
+	' =========================================================================================
+	ReDim aTemplateEntries(1 To 8)
+	ReDim aTemplateSections(1 To 8)
+
+	aTemplateSections(1) = "Please add project description, contacts, locations, doc, status, final reports, etc.... in following section. "
+	aTemplateEntries(1) = ""
+	aTemplateSections(2) = "Issue:"
+	aTemplateEntries(2) = " (Description of project)"
+	aTemplateSections(3) = "Company Contact:"
+	aTemplateEntries(3) = " (Contacts you will be working with on the project, such as: Management, Development, Support)"
+	aTemplateSections(4) = "IBM Contacts:"
+	aTemplateEntries(4) = "  (This section is for the internal contacts you will be working with, such as: TAM/TSS, Architects, Development)"
+	aTemplateSections(5) = "Location:"
+	aTemplateEntries(5) = "  (Customer location)"
+	aTemplateSections(6) = "Notes:"
+	aTemplateEntries(6) = "  (General note on the project. Most important to get are the Objectives, Scope, Schedule and Exit Criteria)"
+	aTemplateSections(7) = "Status:"
+	aTemplateEntries(7) = "  (Project Status)"
+	aTemplateSections(8) = "Final Reports or Doc:"
+	aTemplateEntries(8) = "  (Include all final reports, documentation, etc.. )"
+
+	Set rtStyleNorm = session.CreateRichTextStyle
+	Set rtStyleBold = session.CreateRichTextStyle
+
+	rtStyleNorm.Bold = False
+	rtStyleBold.Bold = True
+	rtStyleNorm.FontSize = 9
+	rtStyleBold.FontSize = 9
+
+	' Create a new Project document
+	Set doc = dbProj.Createdocument()
+	Call doc.Replaceitemvalue("Form", "Project")
+	Call doc.Computewithform(False, False)
+
+	' Now fill in the default fields from the PATHway status doc.
+	Call doc.Replaceitemvalue("ProjectID", Trim$(Str$(vReply)))
+	Call doc.ReplaceItemValue("ProjectStatus", DEFSTATUS)
+	Call doc.Replaceitemvalue("PWayTAM", docPATH.Getitemvalue("PWayTAM")(0))
+	Call doc.Replaceitemvalue("ProjectSubmitter", docPATH.Getitemvalue("PWayAddr")(0))
+	Call doc.Replaceitemvalue("ProjectDesc", docPATH.Getitemvalue("PWayDesc")(0))
+	Call doc.Replaceitemvalue("ProjectCompany", docPATH.Getitemvalue("PWayISV")(0))
+	Call doc.Replaceitemvalue("ProjectCoType", docPATH.Getitemvalue("PWayPartnerType")(0))
+	Call doc.Replaceitemvalue("ProjectStartDate", docPATH.Getitemvalue("PWayNeeded")(0))
+	Call doc.Replaceitemvalue("ProjectDuration", CInt(docPATH.Getitemvalue("PWayDuration")(0)))
+	Call doc.Replaceitemvalue("ProjectDurationIncrement", docPATH.Getitemvalue("PWayDurationType")(0))
+	Call doc.Replaceitemvalue("ProjectType", docPATH.Getitemvalue("PWayHelp")(0))
+	Call doc.Replaceitemvalue("ProjectSOA", "Yes")
+	Call doc.Replaceitemvalue("ProjectResSeq", "01")
+	Call doc.Replaceitemvalue("ProjectResources", session.Commonusername)
+	Call doc.Replaceitemvalue("ProjectProducts", docPATH.GetFirstItem("PWayProd"))
+	Call doc.Replaceitemvalue("ProjectPercent", "100")
+	If (docPATH.Getitemvalue("PWayRDeliver")(0) Like "*Fee*") Then
+		Call doc.Replaceitemvalue("ProjectFee", "Fee")
+	Else
+		Call doc.Replaceitemvalue("ProjectFee", "Free")
+	End If
+	If (docPATH.Getitemvalue("PWayDeliver")(0) = "Remote") Then
+		Call doc.Replaceitemvalue("ProjectLocation", "Remote")
+	Else
+		Call doc.Replaceitemvalue("ProjectLocation", "Onsite")
+	End If
+
+	' =========================================================================================
+	' Create the column parameters for the table
+	Set rtStyleP = session.CreateRichTextParagraphStyle
+	rtStyleP.FirstLineLeftMargin = RULER_ONE_INCH
+	rtStyleP.LeftMargin = RULER_ONE_INCH
+
+	Set rtStylesP(1) = session.CreateRichTextParagraphStyle
+	rtStylesP(1).FirstLineLeftMargin = 0
+	rtStylesP(1).LeftMargin = 0
+	rtStylesP(1).RightMargin = RULER_ONE_INCH * 3.5
+	rtStylesP(1).Alignment = ALIGN_LEFT
+
+	Set rtStylesP(2) = session.CreateRichTextParagraphStyle
+	rtStylesP(2).FirstLineLeftMargin = 0
+	rtStylesP(2).LeftMargin = 0
+	rtStylesP(2).RightMargin = RULER_ONE_INCH * 5
+	rtStylesP(2).Alignment = ALIGN_LEFT
+
+	' =========================================================================================
+	' Create a doc link to the PATHway request document
+
+	' first make sure this is not a duplicate
+	Set vw = dbProj.GetView("Project ID Search")
+	key = doc.GetItemValue("ProjectID")(0)
+	Set dc = vw.GetAllDocumentsByKey(key, True)
+	If (dc.Count > 0) Then
+		Error 30102, "Project ID " & doc.GetItemValue("ProjectID")(0) & " already exists"
+	End If
+
+	' create doc link to PATHway document
+	Call doc.Removeitem("ProjectLink")
+	Set rtField = doc.Createrichtextitem("ProjectLink")
+	Call rtField.AppendDocLink(docPATH, "PATHway Request")
+
+	' Set the location class
+	Call doc.ReplaceItemValue("ResourceType", docResource.Getfirstitem("ResourceClass").Text)
+
+	' =========================================================================================
+	' Add the project status fields at the end of the Body field
+	If (doc.HasItem("ProjectTemplate")) Then
+		Call doc.RemoveItem("ProjectTemplate")
+	End If
+	Set rtField = doc.CreateRichTextItem("ProjectTemplate")
+
+	Call rtField.AddNewline(1)
+	For nX = 1 To 8
+		Call rtField.AppendStyle(rtStyleBold)
+		Call rtField.AppendText(aTemplateSections(nX))
+		Call rtField.AppendStyle(rtStyleNorm)
+		Call rtField.AppendText(aTemplateEntries(nX))
+		Call rtField.AddNewline(3)
+	Next
+
+	' Expose the new documentation table
+	Call doc.ReplaceItemValue("ProjectTemplateHide", "open")
+
+	' =========================================================================================
+	' Save the new Project doc and notify the admins
+	Call doc.Save(True, False, True)
+	Call doc.Computewithform(False, False)
+	Call doc.Save(True, False, True)
+
+	' Notify admin(s) of new project
+	sendList(0) = ADMIN_1
+	sendList(1) = ADMIN_2
+
+	Set docAdmin = dbProj.CreateDocument
+	Call docAdmin.ReplaceItemValue("Form", "Memo")
+	Call docAdmin.Computewithform(False, False)
+	Call docAdmin.ReplaceItemValue("SendTo", sendList)
+	Call docAdmin.ReplaceItemValue("Subject", "New project opened in WWBP Project Database: " & doc.GetItemValue("ProjectID")(0))
+	Set rtAdmin = docAdmin.CreateRichTextItem("Body")
+	Call rtAdmin.AppendText("PATHway opened new project for " & doc.GetItemValue("ProjectCompany")(0) & ", assigned to " & ResName & ".")
+	Call rtAdmin.Addnewline(2, 1)
+	Call rtAdmin.AppendText("==>  ")
+	Call rtAdmin.Appenddoclink(doc, "", "Link to Project document")
+	Call docAdmin.Send(False)
+
+SubExit:
+	Exit Sub
+
+SubError:
+	If (Err = 30102) Then
+		bRetry = True
+		' Resume Update_Check
+	End If
+
+	MsgBox Error, 48, "PATHway Project Create"
+
+	Resume SubExit
+
+End Sub
